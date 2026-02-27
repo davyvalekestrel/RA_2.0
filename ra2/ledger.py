@@ -43,7 +43,12 @@ def load(stream_id: str) -> dict:
         ledger["stream"] = stream_id
         return ledger
     with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            ledger = dict(_EMPTY_LEDGER)
+            ledger["stream"] = stream_id
+            return ledger
     # Ensure all expected keys exist
     for key, default in _EMPTY_LEDGER.items():
         if key not in data:
