@@ -4,14 +4,13 @@ ra2.context_engine — The single choke point for all model calls.
 All prompts must pass through build_context() before reaching any provider.
 
 Internal flow:
-  1. Load ledger state for stream
-  2. Load sigil state
-  3. Load last N live messages (default LIVE_WINDOW)
-  4. Run rule-based compression pass
-  5. Assemble structured prompt
-  6. Estimate token count
-  7. If > MAX_TOKENS: shrink live window, reassemble
-  8. If still > MAX_TOKENS: raise controlled exception
+  1. Redact secrets from incoming messages
+  2. Run rule-based compression pass (writes redacted data to ledger/sigils)
+  3. Determine live window from redacted messages
+  4. Assemble structured prompt
+  5. Estimate token count
+  6. If > MAX_TOKENS: shrink live window, reassemble
+  7. If still > MAX_TOKENS: raise controlled exception
 
 Never reads full .md history.
 """
@@ -170,18 +169,18 @@ def build_context(stream_id: str, new_messages: list) -> dict:
         token_gate.TokenBudgetExceeded: If prompt exceeds MAX_TOKENS
             even after shrinking the live window to minimum.
     """
-    # 1. Run compression pass on new messages → updates ledger + sigils
-    _run_compression(new_messages, stream_id)
+    # 1. Redact secrets before any disk-persisting step (ledger/sigil writes)
+    safe_messages = redact.redact_messages(new_messages)
 
-    # 2. Determine live window
+    # 2. Run compression pass on redacted messages → updates ledger + sigils
+    _run_compression(safe_messages, stream_id)
+
+    # 3. Determine live window (from already-redacted messages)
     window_size = token_gate.LIVE_WINDOW
-    live_messages = new_messages[-window_size:]
+    live_messages = safe_messages[-window_size:]
 
-    # 3. Assemble prompt
+    # 4. Assemble prompt
     prompt = _assemble_prompt(stream_id, live_messages)
-
-    # 4. Redact secrets
-    prompt = redact.redact(prompt)
 
     # 5. Estimate tokens
     estimated = token_gate.estimate_tokens(prompt)
@@ -196,9 +195,8 @@ def build_context(stream_id: str, new_messages: list) -> dict:
                 estimated=estimated,
                 limit=token_gate.MAX_TOKENS,
             )
-        live_messages = new_messages[-window_size:]
+        live_messages = safe_messages[-window_size:]
         prompt = _assemble_prompt(stream_id, live_messages)
-        prompt = redact.redact(prompt)
         estimated = token_gate.estimate_tokens(prompt)
 
     return {
